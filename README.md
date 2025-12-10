@@ -98,34 +98,41 @@ module fp8_top (
 
 **Operation:**
 1. Assert `start` with valid operands and operation code
-2. Wait for `done` signal (5 clock cycles)
+2. Wait for `done` signal (6 cycles for add/sub, 4 cycles for multiply)
 3. Read `result_fp8` and status flags
 
 ### fp8_addsub.v
 
 Floating-point addition and subtraction unit.
 
-**Architecture (5-stage pipeline):**
+**Architecture (6-stage pipeline):**
 
 1. **UNPACK** - Extract sign, exponent, mantissa; detect zeros/denormals
-2. **ALIGN** - Align mantissas by shifting smaller operand right
-3. **COMPUTE** - Add or subtract aligned mantissas
-4. **NORMALIZE** - Shift result and adjust exponent
-5. **PACK** - Round and assemble final FP8 result
+2. **ALIGN** - Compare exponents and determine shift amount
+3. **COMPUTE** - Apply barrel shifter to align mantissas
+4. **COMPUTE2** - Add or subtract aligned mantissas
+5. **NORMALIZE** - Shift result and adjust exponent
+6. **PACK** - Round and assemble final FP8 result
 
 **Key Components:**
 
 - `adder_Nbit` - Ripple-carry adders (4, 5, 8, 9-bit variants)
 - `full_adder` - Single-bit adder using XOR/AND gates
-- `barrel_shifter_right_8` - Logarithmic barrel shifter
+- `barrel_shifter_right_8` - Two instances for shifting either operand
 - `leading_zero_counter_8` - Priority encoder for normalization
+
+**Key Design Features:**
+
+- **Dual Barrel Shifters**: Allows shifting either operand A or B depending on exponent comparison
+- **Split Computation**: COMPUTE applies alignment, COMPUTE2 performs arithmetic (ensures stable inputs)
+- **9-bit Two's Complement**: Proper subtraction using `A + {1,~B} + 1` for correct results
 
 **Algorithm:**
 ```
 1. Unpack: Extract S_a, E_a, M_a and S_b, E_b, M_b
 2. Add hidden bit to mantissas
-3. Calculate exp_diff = |E_a - E_b|
-4. Shift smaller mantissa right by exp_diff
+3. Compare exponents: determine which operand to shift
+4. Apply barrel shifter to smaller operand
 5. If signs same: add mantissas
    If signs differ: subtract smaller from larger
 6. Normalize: shift left/right, adjust exponent
@@ -297,14 +304,24 @@ On underflow:
 
 ## Timing
 
-Each operation completes in **5 clock cycles**:
+**Addition/Subtraction** completes in **6 clock cycles**:
 
 ```
-Cycle 1: UNPACK/IDLE
-Cycle 2: ALIGN/UNPACK
-Cycle 3: COMPUTE/MULTIPLY
-Cycle 4: NORMALIZE
-Cycle 5: PACK (done asserted)
+Cycle 1: UNPACK
+Cycle 2: ALIGN
+Cycle 3: COMPUTE (apply shift)
+Cycle 4: COMPUTE2 (add/subtract)
+Cycle 5: NORMALIZE
+Cycle 6: PACK (done asserted)
+```
+
+**Multiplication** completes in **4 clock cycles**:
+
+```
+Cycle 1: UNPACK
+Cycle 2: MULTIPLY
+Cycle 3: NORMALIZE
+Cycle 4: PACK (done asserted)
 ```
 
 ## File Dependencies
@@ -320,10 +337,11 @@ fp8_top.v
 │   ├── adder_8bit (defined internally)
 │   ├── adder_9bit (defined internally)
 │   ├── leading_zero_counter_8 (defined internally)
-│   └── barrel_shifter_right_8 (defined internally)
+│   └── barrel_shifter_right_8 (x2, defined internally)
 └── fp8_mult.v
     ├── fp8_pkg.vh (included)
     ├── adder_6bit (defined internally)
+    ├── leading_zero_counter_8 (defined internally)
     └── multiplier_4x4 (defined internally)
 ```
 
@@ -339,4 +357,4 @@ For FPGA/ASIC synthesis:
 - No NaN or Infinity handling
 - No division or square root
 - Single-issue (one operation at a time)
-- 5-cycle latency (not pipelined for throughput)
+- 6-cycle latency for add/sub, 4-cycle for multiply (not pipelined for throughput)

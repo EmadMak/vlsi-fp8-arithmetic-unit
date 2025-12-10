@@ -165,45 +165,57 @@ Min Positive Denormalized & \texttt{0\_0000\_001} & 0.001953125 \\
 
 \subsection{Addition/Subtraction Unit Architecture}
 
+The addition/subtraction unit uses a 7-stage pipeline (including IDLE) to ensure proper timing for mantissa alignment and arithmetic operations. The design includes two barrel shifters to handle cases where either operand may need alignment.
+
 \begin{figure}[H]
 \centering
 \begin{tikzpicture}[
-    block/.style={rectangle, draw, fill=blue!10, text width=2.5cm, text centered, minimum height=1cm, rounded corners, font=\small},
+    block/.style={rectangle, draw, fill=blue!10, text width=2cm, text centered, minimum height=1cm, rounded corners, font=\small},
     arrow/.style={->, thick},
-    node distance=1cm
+    node distance=0.7cm
 ]
     % Pipeline stages
     \node[block] (unpack) {Unpack\\Fields};
-    \node[block, right=of unpack] (align) {Exponent\\Alignment};
-    \node[block, right=of align] (compute) {Mantissa\\Add/Sub};
-    \node[block, right=of compute] (norm) {Normalize};
+    \node[block, right=of unpack] (align) {Exponent\\Align};
+    \node[block, right=of align] (compute) {Apply\\Shift};
+    \node[block, right=of compute] (compute2) {Mantissa\\Add/Sub};
+    \node[block, right=of compute2] (norm) {Normalize};
     \node[block, right=of norm] (pack) {Round \&\\Pack};
 
     % Arrows
     \draw[arrow] (unpack) -- (align);
     \draw[arrow] (align) -- (compute);
-    \draw[arrow] (compute) -- (norm);
+    \draw[arrow] (compute) -- (compute2);
+    \draw[arrow] (compute2) -- (norm);
     \draw[arrow] (norm) -- (pack);
 
     % Labels
-    \node[above=0.3cm of unpack] {UNPACK};
-    \node[above=0.3cm of align] {ALIGN};
-    \node[above=0.3cm of compute] {COMPUTE};
-    \node[above=0.3cm of norm] {NORMALIZE};
-    \node[above=0.3cm of pack] {PACK};
+    \node[above=0.3cm of unpack, font=\scriptsize] {UNPACK};
+    \node[above=0.3cm of align, font=\scriptsize] {ALIGN};
+    \node[above=0.3cm of compute, font=\scriptsize] {COMPUTE};
+    \node[above=0.3cm of compute2, font=\scriptsize] {COMPUTE2};
+    \node[above=0.3cm of norm, font=\scriptsize] {NORMALIZE};
+    \node[above=0.3cm of pack, font=\scriptsize] {PACK};
 
     % Helper modules below
-    \node[block, fill=green!20, below=1cm of compute] (adder) {Gate-Level\\Adder};
-    \node[block, fill=green!20, below=1cm of align] (shifter) {Barrel\\Shifter};
+    \node[block, fill=green!20, below=1cm of compute2] (adder) {9-bit\\Adders};
+    \node[block, fill=green!20, below=1cm of compute] (shifter) {Barrel\\Shifters (x2)};
     \node[block, fill=green!20, below=1cm of norm] (lzc) {Leading\\Zero Counter};
 
-    \draw[arrow, dashed] (adder) -- (compute);
-    \draw[arrow, dashed] (shifter) -- (align);
+    \draw[arrow, dashed] (adder) -- (compute2);
+    \draw[arrow, dashed] (shifter) -- (compute);
     \draw[arrow, dashed] (lzc) -- (norm);
 
 \end{tikzpicture}
-\caption{Addition/Subtraction Unit Pipeline}
+\caption{Addition/Subtraction Unit Pipeline (6 cycles)}
 \end{figure}
+
+\textbf{Key Design Features:}
+\begin{itemize}
+    \item \textbf{Dual Barrel Shifters}: Two 8-bit barrel shifters allow shifting either operand A or B depending on which has the smaller exponent.
+    \item \textbf{Split Computation}: The COMPUTE stage applies the alignment shift, while COMPUTE2 performs the actual mantissa addition or subtraction. This separation ensures the aligned mantissa values are stable before arithmetic.
+    \item \textbf{9-bit Two's Complement Subtraction}: Mantissa subtraction uses proper 9-bit two's complement arithmetic with the formula $A - B = A + \sim\{0,B\} + 1 = A + \{1, \sim B\} + 1$.
+\end{itemize}
 
 \subsection{Multiplication Unit Architecture}
 
@@ -378,7 +390,50 @@ The testbench generates waveform outputs in VCD format for viewing in ModelSim o
 
 \begin{figure}[H]
 \centering
-\begin{tikzpicture}[scale=0.8]
+\begin{tikzpicture}[scale=0.7]
+    % Time axis
+    \draw[->] (0,0) -- (16,0) node[right] {Time};
+
+    % Clock signal
+    \foreach \x in {0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15} {
+        \draw (\x,4) -- (\x,4.5) -- (\x+0.5,4.5) -- (\x+0.5,4) -- (\x+1,4);
+    }
+    \node[left] at (0,4.25) {clk};
+
+    % Start signal
+    \draw (0,3) -- (1,3) -- (1,3.5) -- (2,3.5) -- (2,3) -- (16,3);
+    \node[left] at (0,3.25) {start};
+
+    % State for Add/Sub (using boxes)
+    \draw[fill=blue!20] (1,2) rectangle (3,2.5);
+    \node at (2,2.25) {\tiny UNPACK};
+    \draw[fill=blue!20] (3,2) rectangle (5,2.5);
+    \node at (4,2.25) {\tiny ALIGN};
+    \draw[fill=blue!20] (5,2) rectangle (7,2.5);
+    \node at (6,2.25) {\tiny COMPUTE};
+    \draw[fill=blue!20] (7,2) rectangle (9,2.5);
+    \node at (8,2.25) {\tiny COMPUTE2};
+    \draw[fill=blue!20] (9,2) rectangle (11,2.5);
+    \node at (10,2.25) {\tiny NORM};
+    \draw[fill=blue!20] (11,2) rectangle (13,2.5);
+    \node at (12,2.25) {\tiny PACK};
+    \node[left] at (0,2.25) {state (add/sub)};
+
+    % Done signal
+    \draw (0,1) -- (12,1) -- (12,1.5) -- (13,1.5) -- (13,1) -- (16,1);
+    \node[left] at (0,1.25) {done};
+
+    % Cycle markers
+    \foreach \x in {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15} {
+        \draw[dashed, gray] (\x,0) -- (\x,5);
+    }
+\end{tikzpicture}
+\caption{Addition/Subtraction Timing (6 clock cycles)}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[scale=0.7]
     % Time axis
     \draw[->] (0,0) -- (14,0) node[right] {Time};
 
@@ -392,21 +447,19 @@ The testbench generates waveform outputs in VCD format for viewing in ModelSim o
     \draw (0,3) -- (1,3) -- (1,3.5) -- (2,3.5) -- (2,3) -- (14,3);
     \node[left] at (0,3.25) {start};
 
-    % State (using boxes)
-    \draw[fill=gray!20] (1,2) rectangle (3,2.5);
+    % State for Multiply (using boxes)
+    \draw[fill=red!20] (1,2) rectangle (3,2.5);
     \node at (2,2.25) {\tiny UNPACK};
-    \draw[fill=gray!20] (3,2) rectangle (5,2.5);
-    \node at (4,2.25) {\tiny ALIGN};
-    \draw[fill=gray!20] (5,2) rectangle (7,2.5);
-    \node at (6,2.25) {\tiny COMPUTE};
-    \draw[fill=gray!20] (7,2) rectangle (9,2.5);
-    \node at (8,2.25) {\tiny NORM};
-    \draw[fill=gray!20] (9,2) rectangle (11,2.5);
-    \node at (10,2.25) {\tiny PACK};
-    \node[left] at (0,2.25) {state};
+    \draw[fill=red!20] (3,2) rectangle (5,2.5);
+    \node at (4,2.25) {\tiny MULTIPLY};
+    \draw[fill=red!20] (5,2) rectangle (7,2.5);
+    \node at (6,2.25) {\tiny NORM};
+    \draw[fill=red!20] (7,2) rectangle (9,2.5);
+    \node at (8,2.25) {\tiny PACK};
+    \node[left] at (0,2.25) {state (mul)};
 
     % Done signal
-    \draw (0,1) -- (10,1) -- (10,1.5) -- (11,1.5) -- (11,1) -- (14,1);
+    \draw (0,1) -- (8,1) -- (8,1.5) -- (9,1.5) -- (9,1) -- (14,1);
     \node[left] at (0,1.25) {done};
 
     % Cycle markers
@@ -414,7 +467,7 @@ The testbench generates waveform outputs in VCD format for viewing in ModelSim o
         \draw[dashed, gray] (\x,0) -- (\x,5);
     }
 \end{tikzpicture}
-\caption{Typical Operation Timing (5 clock cycles per operation)}
+\caption{Multiplication Timing (4 clock cycles)}
 \end{figure}
 
 \subsection{Sample Test Output}
@@ -463,11 +516,20 @@ The constraint of avoiding \texttt{+}, \texttt{-}, \texttt{*} operators necessit
 \end{itemize}
 
 \subsubsection{Pipeline Architecture}
-Both arithmetic units use a 5-stage pipeline:
+The addition/subtraction unit uses a 6-stage pipeline:
 \begin{enumerate}
     \item \textbf{UNPACK}: Extract sign, exponent, and mantissa fields
-    \item \textbf{ALIGN/EXP\_ADD}: Align operands or add exponents
-    \item \textbf{COMPUTE/MULTIPLY}: Perform mantissa operation
+    \item \textbf{ALIGN}: Compare exponents and determine shift amount
+    \item \textbf{COMPUTE}: Apply barrel shifter to align mantissas
+    \item \textbf{COMPUTE2}: Perform mantissa addition or subtraction
+    \item \textbf{NORMALIZE}: Adjust result to normalized form
+    \item \textbf{PACK}: Round and assemble final result
+\end{enumerate}
+
+The multiplication unit uses a 4-stage pipeline:
+\begin{enumerate}
+    \item \textbf{UNPACK}: Extract sign, exponent, and mantissa fields
+    \item \textbf{MULTIPLY}: Add exponents and multiply mantissas
     \item \textbf{NORMALIZE}: Adjust result to normalized form
     \item \textbf{PACK}: Round and assemble final result
 \end{enumerate}
