@@ -132,11 +132,15 @@ module fp8_addsub (
     assign mant_sum = mant_add_result;
 
     // Mantissa subtraction (a_aligned - b_aligned)
+    // Two's complement: A - B = A + (~B) + 1
+    // For 9-bit: {0,A} - {0,B} = {0,A} + ~{0,B} + 1 = {0,A} + {1,~B} + 1
+    wire [8:0] mant_b_ext_neg;
+    assign mant_b_ext_neg = {1'b1, mant_b_aligned_neg};  // Proper 9-bit two's complement
     wire [8:0] mant_sub_ab;
     wire       carry_sub_ab;
     adder_9bit u_mant_sub_ab (
         .a({1'b0, mant_a_aligned}),
-        .b({1'b0, mant_b_aligned_neg}),
+        .b(mant_b_ext_neg),
         .cin(1'b1),
         .sum(mant_sub_ab),
         .cout(carry_sub_ab)
@@ -145,11 +149,13 @@ module fp8_addsub (
     // Mantissa subtraction (b_aligned - a_aligned)
     wire [7:0] mant_a_aligned_neg;
     assign mant_a_aligned_neg = ~mant_a_aligned;
+    wire [8:0] mant_a_ext_neg;
+    assign mant_a_ext_neg = {1'b1, mant_a_aligned_neg};  // Proper 9-bit two's complement
     wire [8:0] mant_sub_ba;
     wire       carry_sub_ba;
     adder_9bit u_mant_sub_ba (
         .a({1'b0, mant_b_aligned}),
-        .b({1'b0, mant_a_aligned_neg}),
+        .b(mant_a_ext_neg),
         .cin(1'b1),
         .sum(mant_sub_ba),
         .cout(carry_sub_ba)
@@ -272,7 +278,10 @@ module fp8_addsub (
                         mant_b <= {1'b1, b_fp8[2:0], 4'b0000};
                     end
 
-                    // Determine effective operation
+                    // Determine effective operation: subtraction if signs differ
+                    // sign_b already has is_sub XORed in, so just compare sign_a with effective sign_b
+                    // eff_sub = 1 means we subtract mantissas (signs differ)
+                    // eff_sub = 0 means we add mantissas (signs same)
                     eff_sub <= a_fp8[7] ^ (b_fp8[7] ^ is_sub);
                 end
 
@@ -341,8 +350,13 @@ module fp8_addsub (
                         // Use the comparator result for aligned mantissas
                         a_mag_larger <= mant_aligned_a_ge_b;
 
+                        // Debug output
+                        $display("COMPUTE2: eff_sub=%b, sign_a=%b, sign_b=%b", eff_sub, sign_a, sign_b);
+                        $display("  mant_a_aligned=%h, mant_b_aligned=%h", mant_a_aligned, mant_b_aligned);
+                        $display("  mant_sum=%h, mant_sub_ab=%h, mant_sub_ba=%h", mant_sum, mant_sub_ab, mant_sub_ba);
+
                         // Perform addition or subtraction
-                        if (~eff_sub) begin
+                        if (eff_sub == 1'b0) begin
                             // Effective addition: same signs
                             mant_result <= mant_sum;
                             sign_result <= sign_a;
