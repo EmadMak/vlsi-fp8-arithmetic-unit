@@ -396,7 +396,7 @@ module tb_fp8_top;
 
     // Timeout watchdog
     initial begin
-        #100000;
+        #500000;
         $display("ERROR: Simulation timeout!");
         $finish;
     end

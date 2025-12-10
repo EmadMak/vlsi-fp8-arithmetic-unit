@@ -350,11 +350,6 @@ module fp8_addsub (
                         // Use the comparator result for aligned mantissas
                         a_mag_larger <= mant_aligned_a_ge_b;
 
-                        // Debug output
-                        $display("COMPUTE2: eff_sub=%b, sign_a=%b, sign_b=%b", eff_sub, sign_a, sign_b);
-                        $display("  mant_a_aligned=%h, mant_b_aligned=%h", mant_a_aligned, mant_b_aligned);
-                        $display("  mant_sum=%h, mant_sub_ab=%h, mant_sub_ba=%h", mant_sum, mant_sub_ab, mant_sub_ba);
-
                         // Perform addition or subtraction
                         if (eff_sub == 1'b0) begin
                             // Effective addition: same signs

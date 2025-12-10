@@ -144,15 +144,14 @@ module fp8_top (
                 end
 
                 `OP_RESERVED: begin
-                    // Reserved operation - return zero with done
-                    if (start) begin
-                        done <= 1'b1;
-                        result_fp8 <= 8'd0;
-                        flag_zero <= 1'b1;
-                        flag_overflow <= 1'b0;
-                        flag_underflow <= 1'b0;
-                        flag_inexact <= 1'b0;
-                    end
+                    // Reserved operation - return zero with done immediately
+                    // Note: op_latched is set when start is high, so we respond next cycle
+                    done <= 1'b1;
+                    result_fp8 <= 8'd0;
+                    flag_zero <= 1'b1;
+                    flag_overflow <= 1'b0;
+                    flag_underflow <= 1'b0;
+                    flag_inexact <= 1'b0;
                 end
 
                 default: begin
