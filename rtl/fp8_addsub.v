@@ -39,12 +39,13 @@ module fp8_addsub (
     reg        a_larger;             // |A| >= |B|
     reg        eff_sub;              // Effective subtraction
     reg [3:0]  shift_amt;
-    reg        guard_bit, round_bit, sticky_bit;
+    reg        guard_bit, round_bit;
 
     // Wires for gate-level arithmetic
     wire [3:0] exp_diff_ab, exp_diff_ba;
     wire       exp_a_ge_b;
     wire [7:0] mant_shifted;
+    wire       sticky_bit;              // Driven by barrel shifter
     wire [8:0] mant_sum, mant_diff;
     wire       mant_a_ge_b;
     wire [4:0] exp_inc, exp_dec;
