@@ -23,9 +23,10 @@ module fp8_addsub (
     localparam IDLE      = 3'd0;
     localparam UNPACK    = 3'd1;
     localparam ALIGN     = 3'd2;
-    localparam COMPUTE   = 3'd3;
-    localparam NORMALIZE = 3'd4;
-    localparam PACK      = 3'd5;
+    localparam COMPUTE   = 3'd3;  // Apply alignment shift
+    localparam COMPUTE2  = 3'd4;  // Perform add/sub on aligned mantissas
+    localparam NORMALIZE = 3'd5;
+    localparam PACK      = 3'd6;
 
     reg [2:0] state, next_state;
 
@@ -33,10 +34,12 @@ module fp8_addsub (
     reg        sign_a, sign_b, sign_result;
     reg [3:0]  exp_a, exp_b, exp_result;
     reg [3:0]  exp_diff;
-    reg [7:0]  mant_a, mant_b;      // {1, hidden, mantissa, guard, round, sticky}
+    reg [7:0]  mant_a, mant_b;      // {hidden, mantissa[2:0], guard, round, sticky, 0}
+    reg [7:0]  mant_a_aligned, mant_b_aligned;  // After alignment
     reg [8:0]  mant_result;         // Extra bit for overflow
     reg        a_is_zero, b_is_zero;
-    reg        a_larger;             // |A| >= |B|
+    reg        a_larger;             // |A| >= |B| (by exponent)
+    reg        a_mag_larger;         // |A| >= |B| (by full magnitude)
     reg        eff_sub;              // Effective subtraction
     reg [3:0]  shift_amt;
     reg        guard_bit, round_bit;
@@ -44,10 +47,10 @@ module fp8_addsub (
     // Wires for gate-level arithmetic
     wire [3:0] exp_diff_ab, exp_diff_ba;
     wire       exp_a_ge_b;
-    wire [7:0] mant_shifted;
-    wire       sticky_bit;              // Driven by barrel shifter
-    wire [8:0] mant_sum, mant_diff;
-    wire       mant_a_ge_b;
+    wire [7:0] mant_shifted_b, mant_shifted_a;
+    wire       sticky_bit_b, sticky_bit_a;
+    wire [8:0] mant_sum;
+    wire       mant_aligned_a_ge_b;
     wire [4:0] exp_inc, exp_dec;
     wire [3:0] lzc_out;
     wire [4:0] exp_adjusted;
@@ -55,19 +58,12 @@ module fp8_addsub (
     // Gate-level 4-bit subtractor for exponent difference
     wire [3:0] exp_b_neg;
     wire [3:0] exp_a_neg;
-    wire       borrow_ab, borrow_ba;
 
     // Two's complement of exp_b
-    assign exp_b_neg[0] = ~exp_b[0];
-    assign exp_b_neg[1] = ~exp_b[1];
-    assign exp_b_neg[2] = ~exp_b[2];
-    assign exp_b_neg[3] = ~exp_b[3];
+    assign exp_b_neg = ~exp_b;
 
     // Two's complement of exp_a
-    assign exp_a_neg[0] = ~exp_a[0];
-    assign exp_a_neg[1] = ~exp_a[1];
-    assign exp_a_neg[2] = ~exp_a[2];
-    assign exp_a_neg[3] = ~exp_a[3];
+    assign exp_a_neg = ~exp_a;
 
     // exp_a - exp_b using adder with two's complement
     wire [3:0] exp_diff_ab_internal;
@@ -94,46 +90,72 @@ module fp8_addsub (
     );
     assign exp_diff_ba = exp_diff_ba_internal;
 
-    // Mantissa comparison (8-bit)
-    wire [7:0] mant_b_neg;
-    assign mant_b_neg = ~mant_b;
+    // Two barrel shifters - one for each operand
+    barrel_shifter_right_8 u_shifter_b (
+        .in(mant_b),
+        .shift(shift_amt),
+        .out(mant_shifted_b),
+        .sticky(sticky_bit_b)
+    );
+
+    barrel_shifter_right_8 u_shifter_a (
+        .in(mant_a),
+        .shift(shift_amt),
+        .out(mant_shifted_a),
+        .sticky(sticky_bit_a)
+    );
+
+    // Mantissa comparison (8-bit) - compare ALIGNED mantissas
+    wire [7:0] mant_b_aligned_neg;
+    assign mant_b_aligned_neg = ~mant_b_aligned;
     wire [7:0] mant_cmp;
     wire       carry_mant_cmp;
     adder_8bit u_mant_cmp (
-        .a(mant_a),
-        .b(mant_b_neg),
+        .a(mant_a_aligned),
+        .b(mant_b_aligned_neg),
         .cin(1'b1),
         .sum(mant_cmp),
         .cout(carry_mant_cmp)
     );
-    assign mant_a_ge_b = carry_mant_cmp;
+    assign mant_aligned_a_ge_b = carry_mant_cmp;
 
-    // Mantissa addition (9-bit result)
+    // Mantissa addition using ALIGNED mantissas
     wire [8:0] mant_add_result;
     wire       carry_mant_add;
     adder_9bit u_mant_add (
-        .a({1'b0, mant_a}),
-        .b({1'b0, mant_b}),
+        .a({1'b0, mant_a_aligned}),
+        .b({1'b0, mant_b_aligned}),
         .cin(1'b0),
         .sum(mant_add_result),
         .cout(carry_mant_add)
     );
     assign mant_sum = mant_add_result;
 
-    // Mantissa subtraction (larger - smaller)
-    reg [7:0] mant_larger, mant_smaller;
-    wire [7:0] mant_smaller_neg;
-    assign mant_smaller_neg = ~mant_smaller;
-    wire [8:0] mant_sub_result;
-    wire       carry_mant_sub;
-    adder_9bit u_mant_sub (
-        .a({1'b0, mant_larger}),
-        .b({1'b0, mant_smaller_neg}),
+    // Mantissa subtraction (a_aligned - b_aligned)
+    wire [8:0] mant_sub_ab;
+    wire       carry_sub_ab;
+    adder_9bit u_mant_sub_ab (
+        .a({1'b0, mant_a_aligned}),
+        .b({1'b0, mant_b_aligned_neg}),
         .cin(1'b1),
-        .sum(mant_sub_result),
-        .cout(carry_mant_sub)
+        .sum(mant_sub_ab),
+        .cout(carry_sub_ab)
     );
-    assign mant_diff = mant_sub_result;
+
+    // Mantissa subtraction (b_aligned - a_aligned)
+    wire [7:0] mant_a_aligned_neg;
+    assign mant_a_aligned_neg = ~mant_a_aligned;
+    wire [8:0] mant_sub_ba;
+    wire       carry_sub_ba;
+    adder_9bit u_mant_sub_ba (
+        .a({1'b0, mant_b_aligned}),
+        .b({1'b0, mant_a_aligned_neg}),
+        .cin(1'b1),
+        .sum(mant_sub_ba),
+        .cout(carry_sub_ba)
+    );
+
+    // mant_sub_ab and mant_sub_ba are used directly in COMPUTE2 state
 
     // Exponent increment
     adder_5bit u_exp_inc (
@@ -161,14 +183,6 @@ module fp8_addsub (
         .cout()
     );
 
-    // Barrel shifter for mantissa alignment
-    barrel_shifter_right_8 u_shifter (
-        .in(mant_b),
-        .shift(shift_amt),
-        .out(mant_shifted),
-        .sticky(sticky_bit)
-    );
-
     // State machine
     always @(posedge clk or negedge reset_n) begin
         if (~reset_n) begin
@@ -184,7 +198,8 @@ module fp8_addsub (
             IDLE:      if (start) next_state = UNPACK;
             UNPACK:    next_state = ALIGN;
             ALIGN:     next_state = COMPUTE;
-            COMPUTE:   next_state = NORMALIZE;
+            COMPUTE:   next_state = COMPUTE2;
+            COMPUTE2:  next_state = NORMALIZE;
             NORMALIZE: next_state = PACK;
             PACK:      next_state = IDLE;
             default:   next_state = IDLE;
@@ -209,14 +224,15 @@ module fp8_addsub (
             exp_diff <= 4'd0;
             mant_a <= 8'd0;
             mant_b <= 8'd0;
+            mant_a_aligned <= 8'd0;
+            mant_b_aligned <= 8'd0;
             mant_result <= 9'd0;
             a_is_zero <= 1'b0;
             b_is_zero <= 1'b0;
             a_larger <= 1'b0;
+            a_mag_larger <= 1'b0;
             eff_sub <= 1'b0;
             shift_amt <= 4'd0;
-            mant_larger <= 8'd0;
-            mant_smaller <= 8'd0;
             guard_bit <= 1'b0;
             round_bit <= 1'b0;
         end else begin
@@ -257,7 +273,7 @@ module fp8_addsub (
                     end
 
                     // Determine effective operation
-                    eff_sub <= sign_a ^ (b_fp8[7] ^ is_sub);
+                    eff_sub <= a_fp8[7] ^ (b_fp8[7] ^ is_sub);
                 end
 
                 ALIGN: begin
@@ -266,24 +282,36 @@ module fp8_addsub (
                         exp_result <= 4'd0;
                         mant_result <= 9'd0;
                         sign_result <= sign_a & sign_b;
+                        mant_a_aligned <= 8'd0;
+                        mant_b_aligned <= 8'd0;
                     end else if (a_is_zero) begin
                         exp_result <= exp_b;
                         mant_result <= {1'b0, mant_b};
                         sign_result <= sign_b;
+                        mant_a_aligned <= 8'd0;
+                        mant_b_aligned <= mant_b;
                     end else if (b_is_zero) begin
                         exp_result <= exp_a;
                         mant_result <= {1'b0, mant_a};
                         sign_result <= sign_a;
+                        mant_a_aligned <= mant_a;
+                        mant_b_aligned <= 8'd0;
                     end else begin
                         // Align mantissas to larger exponent
                         if (exp_a_ge_b) begin
                             exp_result <= exp_a;
                             shift_amt <= exp_diff_ab;
                             a_larger <= 1'b1;
+                            // A has larger/equal exponent, shift B
+                            mant_a_aligned <= mant_a;
+                            // mant_b_aligned will use mant_shifted_b in COMPUTE
                         end else begin
                             exp_result <= exp_b;
                             shift_amt <= exp_diff_ba;
                             a_larger <= 1'b0;
+                            // B has larger exponent, shift A
+                            mant_b_aligned <= mant_b;
+                            // mant_a_aligned will use mant_shifted_a in COMPUTE
                         end
                     end
                 end
@@ -294,33 +322,40 @@ module fp8_addsub (
                     end else begin
                         // Apply shift to smaller operand's mantissa
                         if (a_larger) begin
-                            mant_larger <= mant_a;
-                            mant_smaller <= mant_shifted;
+                            // A has larger exponent, B was shifted
+                            mant_b_aligned <= mant_shifted_b;
+                            // mant_a_aligned already set in ALIGN
                         end else begin
-                            mant_larger <= mant_b;
-                            // Need to shift mant_a instead - swap
-                            mant_smaller <= mant_a >> shift_amt;
+                            // B has larger exponent, A was shifted
+                            mant_a_aligned <= mant_shifted_a;
+                            // mant_b_aligned already set in ALIGN
                         end
+                    end
+                end
+
+                COMPUTE2: begin
+                    if (a_is_zero || b_is_zero) begin
+                        // Already handled in ALIGN
+                    end else begin
+                        // Now aligned mantissas are ready - determine magnitude and compute
+                        // Use the comparator result for aligned mantissas
+                        a_mag_larger <= mant_aligned_a_ge_b;
 
                         // Perform addition or subtraction
                         if (~eff_sub) begin
-                            // Effective addition
+                            // Effective addition: same signs
                             mant_result <= mant_sum;
                             sign_result <= sign_a;
                         end else begin
-                            // Effective subtraction
-                            if (exp_a_ge_b) begin
-                                if (mant_a_ge_b) begin
-                                    mant_result <= mant_diff;
-                                    sign_result <= sign_a;
-                                end else begin
-                                    // |B| > |A|, need to swap and negate
-                                    mant_larger <= mant_shifted;
-                                    mant_smaller <= mant_a;
-                                    sign_result <= sign_b;
-                                end
+                            // Effective subtraction: different signs
+                            // Result sign depends on which operand has larger magnitude
+                            if (mant_aligned_a_ge_b) begin
+                                // |A| >= |B|, use A - B, sign = sign_a
+                                mant_result <= mant_sub_ab;
+                                sign_result <= sign_a;
                             end else begin
-                                mant_result <= mant_diff;
+                                // |B| > |A|, use B - A, sign = sign_b
+                                mant_result <= mant_sub_ba;
                                 sign_result <= sign_b;
                             end
                         end
